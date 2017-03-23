@@ -28,7 +28,7 @@ config = {
     "logfile": "maday",
     'dealByVolume': True,
     "memorySize": 5,
-    'assetType': 'FUND'
+    'assetType': 'STOCK'
 }
 
 def initial(sdk):
@@ -44,6 +44,7 @@ def initPerDay(sdk):
     global dayCounter
     if dayCounter % PERIOD == 0:
         currentHolding = [i.code for i in sdk.getPositions()]
+        print("----------------------------------------")
         print(currentHolding)
         buy, sell = getSignal(getURatio(sdk))
         buy.extend(sell)
@@ -133,8 +134,8 @@ def strategy(sdk):
         # set optimal weight to in position aseests
         currentHolding = [i.code for i in sdk.getPositions()]
         # intend to hold these stocks
-        #intend = list(set(currentHolding) | set(stockToBuy))
-        #optWeight = getOptWeight(intend)
+        intend = list(set(currentHolding) | set(stockToBuy))
+        optWeight = getOptWeight(intend)
 
         if stockToBuy:
             buyStocks(sdk, stockToBuy, quotes)
@@ -195,23 +196,8 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod):
         stockDataList[i]  # index = time , columns = factors  : nxk
 
         # use numpy to calc exposure
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    print(stockDataList)
+    quit()
 
 def buyStocks(sdk, stockToBuy, quotes):
     quoteStocks = quotes.keys()
