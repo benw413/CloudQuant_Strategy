@@ -14,13 +14,13 @@ from CloudQuant import MiniSimulator  # 导入云宽客SDK
 from joblib import Parallel, delayed
 
 INIT_CAP = 80000000  # init capital
-START_DATE = '20090101'  # backtesting start
-END_DATE = '20090201'  # backtesting end
+START_DATE = '20160101'  # backtesting start
+END_DATE = '20160109'  # backtesting end
 
 PERIOD = 20  # the period used to calculate win/lose
 UP_BAND = 0.6  # the buy signal band
 DOWN_BAND = 0.3  # the sell signal band
-FACTORS = ["LZ_GPA_VAL_PE", "LZ_GPA_DERI_LnFloatCap"]
+FACTORS = ["LZ_GPA_VAL_PE", "LZ_GPA_DERI_LnFloatCap", "LZ_GPA_QUOTE_TVOLUME"]
 config = {
     'username': 'zhouyusheng2016',
     'password': '6403583love',
@@ -50,10 +50,17 @@ def initial(sdk):
     day = 0
 def initPerDay(sdk):
     global day
-    if day % PERIOD == 0:
-        stockCodeList = sdk.getStockList()[0:5]
-        getOptWeight(sdk, stockCodeList, FACTORS, 10, "000985")
-    day += 1
+    #if day % PERIOD == 0:
+     #   stockCodeList = sdk.getStockList()[0:6]
+      #  getOptWeight(sdk, stockCodeList, FACTORS, 10, "000985")
+    #day += 1
+    exposurePeriod = 12
+    PERIOD = 20
+    trials = np.array(range(0, (exposurePeriod + 1) * PERIOD, PERIOD)) - 1
+    trials[0] = 0
+    a = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_VAL_PE", 12*20),
+                     columns=sdk.getStockList())["002173"].iloc[trials]
+    print(a.isnull().sum())
 def strategy(sdk):
     pass
 def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexCode):
@@ -159,11 +166,25 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexC
     speciRisk = np.identity(n=len(stockCodeList), dtype=float)*factor_return_residual.std().values**2
     F = np.dot(factor_return_df.values.transpose(), factor_return_df.values)
     facRisk = np.dot(np.dot(stockExposure.values, F), stockExposure.values.transpose())
-    totalRisk = facRisk + speciRisk  # --- #Assest X #Asset
+
+    # 3.2 solving the QP
+    P =matrix((facRisk + speciRisk).tolist())  # ---  #Assest X #Asset # the quadratics term
+    q = matrix(np.zeros((1, len(stockCodeList))).tolist())  # first oreder term
     # now minimize the totoal risk with respect to certain weight
     # import cvxopt to solve
 
+    # the constrains
+    A = matrix(np.ones((1, len(stockCodeList))), (1, len(stockCodeList)))
+    b = matrix(1.0)
 
+    Garray = np.identity(len(stockCodeList), dtype=float)*(-1)
+    G = matrix(Garray.tolist())
+    h = matrix(np.zeros((1, len(stockCodeList))).tolist())
+    # solving the QP
+    sol = solvers.qp(P, q, G, h, A, b)
+    soldf = pd.DataFrame(columns=stockCodeList)
+    soldf.loc["sol-x"] = np.array(sol["x"]).reshape(1, len(stockCodeList))[0]
+    return soldf
 
 def main():
     # 将策略函数加入
