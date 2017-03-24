@@ -7,7 +7,7 @@ from CloudQuant import MiniSimulator  # 导入云宽客SDK
 
 
 INIT_CAP = 80000000  # init capital
-START_DATE = '20160101'  # backtesting start
+START_DATE = '20120101'  # backtesting start
 END_DATE = '20170101'  # backtesting end
 
 PERIOD = 20  # the period used to calculate win/lose
@@ -290,7 +290,7 @@ def buyStocks(sdk, stockToBuy, quotes):
     asset = sdk.getAccountInfo()
     # 剩余现金作为购买预算 各支股票平均分配预算
     if stockToBuy and asset:
-        budget = asset.availableCash / len(stockToBuy)
+        budget = asset.availableCash * 0.2 / len(stockToBuy)
         orders = []
         for buyStock in stockToBuy:
             buyPrice = quotes[buyStock].high  # 购买价格为上分钟最高价
