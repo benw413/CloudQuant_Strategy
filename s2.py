@@ -6,14 +6,17 @@ import statsmodels.api as sm
 from CloudQuant import MiniSimulator  # 导入云宽客SDK
 
 
-INIT_CAP = 80000000  # init capital
-START_DATE = '20160101'  # backtesting start
-END_DATE = '20170101'  # backtesting end
+INIT_CAP = 100000000  # init capital
+START_DATE = '20120101'  # backtesting start
+END_DATE = '20170301'  # backtesting end
 
 PERIOD = 20  # the period used to calculate win/lose
 UP_BAND = 0.6  # the buy signal band
-DOWN_BAND = 0.3  # the sell signal band
-FACTORS = ["LZ_GPA_VAL_PE",
+DOWN_BAND = 0.25  # the sell signal band
+FACTORS = ["LZ_GPA_VAL_PB",
+           "LZ_GPA_FIN_IND_PROFITTOGR",
+           "LZ_GPA_VAL_TURN",
+           "LZ_GPA_FIN_IND_QFA_CGRGR",
            "LZ_GPA_DERI_LnFloatCap",
            "LZ_GPA_QUOTE_TVOLUME"]
 
@@ -28,7 +31,7 @@ config = {
     'executeMode': 'D',
     'feeRate': 0.001,
     'feeLimit': 5,
-    'strategyName': 'Strategy_1',  # strategy name
+    'strategyName': 'Strategy_weightedContrast',  # strategy name
     "logfile": "maday",
     'dealByVolume': True,
     "memorySize": 5,
@@ -57,10 +60,6 @@ def initPerDay(sdk):
             stocks.extend(getStocksForIndustry(sdk, i))
         pool = list(set(stocks) | set(currentHolding))
         sdk.setGlobal("POOL", pool)
-
-    if sdk.getGlobal("STATE") is None:
-        sdk.setGlobal("STATE", np.zeros(29, dtype=int))
-
     dayCounter += 1
 
 def getStocksForIndustry(sdk, index):
@@ -103,7 +102,6 @@ def getURatio(sdk):
         upRatio.append(ratio)
     upRatio = np.array(upRatio)
     return upRatio
-
 def strategy(sdk):
     sdk.sdklog(sdk.getNowDate(), 'now')
     global dayCounter
@@ -133,20 +131,19 @@ def strategy(sdk):
         # get the latest price
         quotes = sdk.getQuotes(sdk.getGlobal("POOL"))
         if stockToSell:
-            sellStocks(sdk, stockToSell, quotes)
+            sellAllPositionInStocks(sdk, stockToSell, quotes)
         # set optimal weight to in position aseests
         currentHolding = [i.code for i in sdk.getPositions()]
         # intend to hold these stocks
-        intend = list(set(currentHolding) | (set(stockToBuy) & set(quotes.keys())))
-        #if intend:
-            #optWeight = getOptWeight(sdk, intend, FACTORS, 12, "000985")
-
-        #print([i.optPosition for i in sdk.getPositions()])
-
-        if stockToBuy:
-            buyStocks(sdk, stockToBuy, quotes)
+        intend = list(set(currentHolding) | set(stockToBuy))
+        if intend:
+            optWeight = getOptWeight(sdk, intend, FACTORS, 12, "000985")
+            adjustPosition(sdk, optWeight, quotes)  # adjust portfolio with weight
+        #if stockToBuy:
+         #   buyStocks(sdk, stockToBuy, quotes)
         # update the state
         sdk.setGlobal("STATE", newState)
+#  returns a Series of stockcodes and its optimal weight
 def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexCode):
     ###        important notes                ###
     # Factor  files should be prepared in init()#
@@ -280,10 +277,63 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexC
     h = matrix(np.zeros((1, len(stockCodeList))).tolist())
     # solving the QP
     sol = solvers.qp(P, q, G, h, A, b)
-    soldf = pd.DataFrame(columns=stockCodeList)
-    soldf.loc["sol-x"] = np.array(sol["x"]).reshape(1, len(stockCodeList))[0]
+    soldf = pd.Series(index=stockCodeList, data=np.array(sol["x"]).reshape(1, len(stockCodeList))[0])
     return soldf
+def getAccountCapital(sdk, quotes):
+    dict_position = {i.code: i.optPosition for i in sdk.getPositions()}
+    dict_price = {i: quotes[i].open for i in dict_position.keys()}
+    dict_cap = {i: dict_position[i]*dict_price[i] for i in dict_position.keys()}
 
+    cap = sdk.getAccountInfo().availableCash
+    for i in dict_cap.keys():
+        cap += dict_cap[i]
+    return cap
+# adjusting position in stocks
+def adjustPosition(sdk, stockWithWeight,quotes):
+    dict_position = {i.code: i.optPosition for i in sdk.getPositions()}
+    dict_price = {i: quotes[i].open for i in dict_position.keys()}
+    dict_cap = {i: dict_position[i] * dict_price[i] for i in dict_position.keys()}
+    # captial in account
+    cap = sdk.getAccountInfo().availableCash
+    for i in dict_cap.keys():
+        cap += dict_cap[i]
+    # target portfolio
+    portfolio = stockWithWeight * cap
+    # current portfolio
+    current_port = pd.Series(data=dict_cap)
+    # distance to adjust
+    distance = pd.Series()
+    if dict_cap:
+        for i in portfolio.index:
+            if i in current_port.index:
+                distance.loc[i] = portfolio.loc[i] - current_port.loc[i]
+            else:
+                distance.loc[i] = portfolio.loc[i]
+    else:
+        distance = portfolio
+    # first sell the under weighted asset to required weight
+    tosell = distance[distance < 0]
+    print(tosell)
+    sellStocksWithCap(sdk, tosell, quotes)
+    # second buy the over weighted asset to required weight
+    tobuy = distance[distance > 0]
+    print(tobuy)
+    buyStocksWithCap(sdk, tobuy, quotes)
+# the buy stock methods
+def buyStocksWithCap(sdk, stockToBuyWithCap, quotes):
+    quoteStocks = quotes.keys()
+    stockToBuy = list(set(stockToBuyWithCap.index.tolist()) & set(quoteStocks))
+    asset = sdk.getAccountInfo()
+    if stockToBuy and asset:
+        orders = []
+        for stock in stockToBuy:
+            buyPrice = quotes[stock].high
+            buyAmount = int(np.round(stockToBuyWithCap.loc[stock]/buyPrice, -2))
+            if buyPrice > 0 and buyAmount >= 100:
+                orders.append([stock, buyPrice, buyAmount, "BUY"])
+        if orders:
+            sdk.makeOrders(orders)
+            sdk.sdklog(orders, 'buy')
 def buyStocks(sdk, stockToBuy, quotes):
     quoteStocks = quotes.keys()
     stockToBuy = list(set(stockToBuy) & set(quoteStocks))
@@ -301,7 +351,7 @@ def buyStocks(sdk, stockToBuy, quotes):
             sdk.makeOrders(orders)
             sdk.sdklog(orders, 'buy')  # 将购买计入日志
 # the sell method
-def sellStocks(sdk, stockToSell, quotes):
+def sellAllPositionInStocks(sdk, stockToSell, quotes):
     # 滤除取不到盘口的股票
     quoteStocks = quotes.keys()
     stockToSell = list(set(stockToSell) & set(quoteStocks))
@@ -318,6 +368,20 @@ def sellStocks(sdk, stockToSell, quotes):
         if orders:
             sdk.makeOrders(orders)
             sdk.sdklog(orders, 'sell')  # 将出售记入日志
+def sellStocksWithCap(sdk, stockToSellWithCap, quotes):
+    quoteStocks = quotes.keys()
+    stockToSell = list(set(stockToSellWithCap.index.tolist()) & set(quoteStocks))
+    if stockToSell:
+        orders = []
+        for stock in stockToSell:
+            sellPrice = quotes[stock].low
+            sellAmount = int(np.round(-stockToSellWithCap.loc[stock]/sellPrice, -2))
+            if sellPrice > 0 and sellAmount >= 100:
+                orders.append([stock, sellPrice, sellAmount, "SELL"])
+        if orders:
+            sdk.makeOrders(orders)
+            sdk.sdklog(orders, 'sell')
+
 def main():
     # 将策略函数加入
     config['initial'] = initial
