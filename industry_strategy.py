@@ -131,13 +131,14 @@ def strategy(sdk):
         stockToSell = []
         for i in industToSell:
             stockToSell.extend(getStocksForIndustry(sdk, i))
-
         # get the latest price
         quotes = sdk.getQuotes(sdk.getGlobal("POOL"))
         if stockToSell:
             sellAllPositionInStocks(sdk, stockToSell, quotes)
         # set optimal weight to in position aseests
         if stockToBuy:
+            # selecting stock in industry
+            stockToBuy = selectBySomeMethod(sdk, stockToBuy)
             currentHolding = [i.code for i in sdk.getPositions()]
             # intend to hold these stocks
             intend = list(set(currentHolding) | set(stockToBuy))
@@ -315,17 +316,26 @@ def adjustPosition(sdk, stockWithWeight, quotes, totalCap):
         distance = portfolio
     # first sell the under weighted asset to required weight
     tosell = distance[distance < 0]
-    print(tosell)
     sellStocksWithCap(sdk, tosell, quotes)
     # second buy the over weighted asset to required weight
     tobuy = distance[distance > 0]
-    print(tobuy)
     buyStocksWithCap(sdk, tobuy, quotes)
-# set
+# use only partlly of totoal capital
 def get_percent_capital(sdk,quotes,percentage=1):
     cap = getAccountCapital(sdk, quotes)
     return cap*percentage
-# the buy stock methods
+# select stocks within certain industry
+def selectBySomeMethod(sdk, stockToBuy):
+    buy = []
+    stockCodes = sdk.getStockList()
+    # the history volumne weighted ave price
+    df = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_QUOTE_TCLOSE", PERIOD), columns=stockCodes)[stockToBuy]
+    # the daily returns
+    rts = (df / df.shift(1) - 1)
+    sharpe = rts.mean() / rts.std()
+    good = sharpe[sharpe > sharpe.median()]
+    return good.index.tolist()
+# the buy stock methods, currently buy at open
 def buyStocksWithCap(sdk, stockToBuyWithCap, quotes):
     quoteStocks = quotes.keys()
     stockToBuy = list(set(stockToBuyWithCap.index.tolist()) & set(quoteStocks))
@@ -333,7 +343,7 @@ def buyStocksWithCap(sdk, stockToBuyWithCap, quotes):
     if stockToBuy and asset:
         orders = []
         for stock in stockToBuy:
-            buyPrice = quotes[stock].high
+            buyPrice = quotes[stock].open
             buyAmount = int(np.round(stockToBuyWithCap.loc[stock]/buyPrice, -2))
             if buyPrice > 0 and buyAmount >= 100:
                 orders.append([stock, buyPrice, buyAmount, "BUY"])
@@ -374,20 +384,20 @@ def sellAllPositionInStocks(sdk, stockToSell, quotes):
         if orders:
             sdk.makeOrders(orders)
             sdk.sdklog(orders, 'sell')  # 将出售记入日志
+# currently sell at open
 def sellStocksWithCap(sdk, stockToSellWithCap, quotes):
     quoteStocks = quotes.keys()
     stockToSell = list(set(stockToSellWithCap.index.tolist()) & set(quoteStocks))
     if stockToSell:
         orders = []
         for stock in stockToSell:
-            sellPrice = quotes[stock].low
+            sellPrice = quotes[stock].open
             sellAmount = int(np.round(-stockToSellWithCap.loc[stock]/sellPrice, -2))
             if sellPrice > 0 and sellAmount >= 100:
                 orders.append([stock, sellPrice, sellAmount, "SELL"])
         if orders:
             sdk.makeOrders(orders)
             sdk.sdklog(orders, 'sell')
-
 def main():
     # 将策略函数加入
     config['initial'] = initial

@@ -14,10 +14,15 @@ PERIOD = 30  # the period used to calculate win/lose
 UP_BAND = 0.6  # the buy signal band
 DOWN_BAND = 0.25  # the sell signal band
 FACTORS = ["LZ_GPA_VAL_PB",
+           "LZ_GPA_VAL_PE",
+           "LZ_GPA_FIN_IND_ARTURNDAYS",
+           "LZ_GPA_FIN_IND_DEBTTOASSETS",
+           "LZ_GPA_FIN_IND_OPTODEBT",
            "LZ_GPA_FIN_IND_PROFITTOGR",
            "LZ_GPA_FIN_IND_QFA_CGRGR",
-           "LZ_GPA_DERI_LnFloatCap",
-           "LZ_GPA_QUOTE_TVOLUME"]
+           # 其他因子
+           "LZ_GPA_VAL_TURN",# turn over
+           "LZ_GPA_DERI_LnFloatCap"]
 
 config = {
     'username': 'zhouyusheng2016',
@@ -30,7 +35,7 @@ config = {
     'executeMode': 'D',
     'feeRate': 0.001,
     'feeLimit': 5,
-    'strategyName': 'Strategy_equalWeight',  # strategy name
+    'strategyName': 'Strategy_weightedContrastP30',  # strategy name
     "logfile": "maday",
     'dealByVolume': True,
     "memorySize": 5,
@@ -126,21 +131,23 @@ def strategy(sdk):
         stockToSell = []
         for i in industToSell:
             stockToSell.extend(getStocksForIndustry(sdk, i))
+        # selecting stock in industry
 
         # get the latest price
         quotes = sdk.getQuotes(sdk.getGlobal("POOL"))
         if stockToSell:
             sellAllPositionInStocks(sdk, stockToSell, quotes)
         # set optimal weight to in position aseests
-        #currentHolding = [i.code for i in sdk.getPositions()]
-
-        # intend to hold these stocks
-        #intend = list(set(currentHolding) | set(stockToBuy))
-        #if intend:
-         #   optWeight = getOptWeight(sdk, intend, FACTORS, 12, "000985")
-          #  adjustPosition(sdk, optWeight, quotes)  # adjust portfolio with weight
         if stockToBuy:
-            buyStocks(sdk, stockToBuy, quotes)
+            currentHolding = [i.code for i in sdk.getPositions()]
+            # intend to hold these stocks
+            intend = list(set(currentHolding) | set(stockToBuy))
+            if intend:
+                optWeight = getOptWeight(sdk, intend, FACTORS, 12, "000985")
+                cap = get_percent_capital(sdk, quotes)
+                adjustPosition(sdk, optWeight, quotes, cap)  # adjust portfolio with weight
+        #if stockToBuy:
+         #   buyStocks(sdk, stockToBuy, quotes)
         # update the state
         sdk.setGlobal("STATE", newState)
 #  returns a Series of stockcodes and its optimal weight
@@ -289,16 +296,12 @@ def getAccountCapital(sdk, quotes):
         cap += dict_cap[i]
     return cap
 # adjusting position in stocks
-def adjustPosition(sdk, stockWithWeight,quotes):
+def adjustPosition(sdk, stockWithWeight, quotes, totalCap):
     dict_position = {i.code: i.optPosition for i in sdk.getPositions()}
     dict_price = {i: quotes[i].open for i in dict_position.keys()}
     dict_cap = {i: dict_position[i] * dict_price[i] for i in dict_position.keys()}
-    # captial in account
-    cap = sdk.getAccountInfo().availableCash
-    for i in dict_cap.keys():
-        cap += dict_cap[i]
     # target portfolio
-    portfolio = stockWithWeight * cap
+    portfolio = stockWithWeight * totalCap
     # current portfolio
     current_port = pd.Series(data=dict_cap)
     # distance to adjust
@@ -319,6 +322,10 @@ def adjustPosition(sdk, stockWithWeight,quotes):
     tobuy = distance[distance > 0]
     print(tobuy)
     buyStocksWithCap(sdk, tobuy, quotes)
+# set
+def get_percent_capital(sdk,quotes,percentage=1):
+    cap = getAccountCapital(sdk, quotes)
+    return cap*percentage
 # the buy stock methods
 def buyStocksWithCap(sdk, stockToBuyWithCap, quotes):
     quoteStocks = quotes.keys()
@@ -381,7 +388,6 @@ def sellStocksWithCap(sdk, stockToSellWithCap, quotes):
         if orders:
             sdk.makeOrders(orders)
             sdk.sdklog(orders, 'sell')
-
 def main():
     # 将策略函数加入
     config['initial'] = initial
