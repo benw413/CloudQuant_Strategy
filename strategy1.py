@@ -10,7 +10,7 @@ INIT_CAP = 100000000  # init capital
 START_DATE = '20120101'  # backtesting start
 END_DATE = '20170301'  # backtesting end
 
-PERIOD = 20  # the period used to calculate win/lose
+PERIOD = 30  # the period used to calculate win/lose
 UP_BAND = 0.6  # the buy signal band
 DOWN_BAND = 0.25  # the sell signal band
 FACTORS = ["LZ_GPA_VAL_PB",
@@ -30,7 +30,7 @@ config = {
     'executeMode': 'D',
     'feeRate': 0.001,
     'feeLimit': 5,
-    'strategyName': 'Strategy_weightedContrast',  # strategy name
+    'strategyName': 'Strategy_equalWeight',  # strategy name
     "logfile": "maday",
     'dealByVolume': True,
     "memorySize": 5,
@@ -133,6 +133,7 @@ def strategy(sdk):
             sellAllPositionInStocks(sdk, stockToSell, quotes)
         # set optimal weight to in position aseests
         #currentHolding = [i.code for i in sdk.getPositions()]
+
         # intend to hold these stocks
         #intend = list(set(currentHolding) | set(stockToBuy))
         #if intend:
