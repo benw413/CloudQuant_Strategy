@@ -6,7 +6,7 @@ import statsmodels.api as sm
 from CloudQuant import MiniSimulator  # 导入云宽客SDK
 
 
-INIT_CAP = 100000000  # init capital
+INIT_CAP = 10000000  # init capital
 START_DATE = '20120101'  # backtesting start
 END_DATE = '20170301'  # backtesting end
 
@@ -23,7 +23,6 @@ FACTORS = ["LZ_GPA_VAL_PB",
            # 其他因子
            "LZ_GPA_VAL_TURN",# turn over
            "LZ_GPA_DERI_LnFloatCap"]
-
 config = {
     'username': 'zhouyusheng2016',
     'password': '6403583love',
@@ -65,7 +64,6 @@ def initPerDay(sdk):
         pool = list(set(stocks) | set(currentHolding))
         sdk.setGlobal("POOL", pool)
     dayCounter += 1
-
 def getStocksForIndustry(sdk, index):
     stockCodes = sdk.getStockList()
     industry = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_INDU_ZX", 1), columns=stockCodes)
@@ -131,14 +129,14 @@ def strategy(sdk):
         stockToSell = []
         for i in industToSell:
             stockToSell.extend(getStocksForIndustry(sdk, i))
-        # selecting stock in industry
-
         # get the latest price
         quotes = sdk.getQuotes(sdk.getGlobal("POOL"))
         if stockToSell:
             sellAllPositionInStocks(sdk, stockToSell, quotes)
         # set optimal weight to in position aseests
         if stockToBuy:
+            # selecting stock in industry
+            stockToBuy = selectBySomeMethod(sdk, stockToBuy)
             currentHolding = [i.code for i in sdk.getPositions()]
             # intend to hold these stocks
             intend = list(set(currentHolding) | set(stockToBuy))
@@ -269,14 +267,16 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexC
     speciRisk = np.identity(n=len(stockCodeList), dtype=float)*factor_return_residual.std().values**2
     F = np.dot(factor_return_df.values.transpose(), factor_return_df.values)
     facRisk = np.dot(np.dot(stockExposure.values, F), stockExposure.values.transpose())
+    # the expected returns
+    exprts = -1 * rts[stockCodeList].mean().values
 
-    # 3.2 solving the QP
+    # 3.2 solving the QP min X'SigX - expRts'X
     P =matrix((facRisk + speciRisk).tolist())  # ---  #Assest X #Asset # the quadratics term
-    q = matrix(np.zeros((1, len(stockCodeList))).tolist())  # first oreder term
+    q = matrix(exprts.tolist())  # first oreder term
     # now minimize the totoal risk with respect to certain weight
     # import cvxopt to solve
     # the constrains
-    A = matrix(np.ones((1, len(stockCodeList))), (1, len(stockCodeList)))
+    A = matrix(np.ones((1, len(stockCodeList))), (1, len(stockCodeList))) #要改
     b = matrix(1.0)
 
     Garray = np.identity(len(stockCodeList), dtype=float)*(-1)
@@ -286,6 +286,10 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexC
     sol = solvers.qp(P, q, G, h, A, b)
     soldf = pd.Series(index=stockCodeList, data=np.array(sol["x"]).reshape(1, len(stockCodeList))[0])
     return soldf
+# market risk contronl method
+def capitalControlOnMarket(sdk):
+
+    return None
 def getAccountCapital(sdk, quotes):
     dict_position = {i.code: i.optPosition for i in sdk.getPositions()}
     dict_price = {i: quotes[i].open for i in dict_position.keys()}
@@ -316,17 +320,26 @@ def adjustPosition(sdk, stockWithWeight, quotes, totalCap):
         distance = portfolio
     # first sell the under weighted asset to required weight
     tosell = distance[distance < 0]
-    print(tosell)
     sellStocksWithCap(sdk, tosell, quotes)
     # second buy the over weighted asset to required weight
     tobuy = distance[distance > 0]
-    print(tobuy)
     buyStocksWithCap(sdk, tobuy, quotes)
-# set
+# use only partlly of totoal capital
 def get_percent_capital(sdk,quotes,percentage=1):
     cap = getAccountCapital(sdk, quotes)
     return cap*percentage
-# the buy stock methods
+# select stocks within certain industry
+def selectBySomeMethod(sdk, stockToBuy):
+    buy = []
+    stockCodes = sdk.getStockList()
+    # the history volumne weighted ave price
+    df = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_QUOTE_TCLOSE", PERIOD), columns=stockCodes)[stockToBuy]
+    # the daily returns
+    rts = (df / df.shift(1) - 1)
+    sharpe = rts.mean() / rts.std()
+    good = sharpe[sharpe > sharpe.median()]
+    return good.index.tolist()
+# the buy stock methods, currently buy at open
 def buyStocksWithCap(sdk, stockToBuyWithCap, quotes):
     quoteStocks = quotes.keys()
     stockToBuy = list(set(stockToBuyWithCap.index.tolist()) & set(quoteStocks))
@@ -334,7 +347,7 @@ def buyStocksWithCap(sdk, stockToBuyWithCap, quotes):
     if stockToBuy and asset:
         orders = []
         for stock in stockToBuy:
-            buyPrice = quotes[stock].high
+            buyPrice = quotes[stock].open
             buyAmount = int(np.round(stockToBuyWithCap.loc[stock]/buyPrice, -2))
             if buyPrice > 0 and buyAmount >= 100:
                 orders.append([stock, buyPrice, buyAmount, "BUY"])
@@ -350,7 +363,7 @@ def buyStocks(sdk, stockToBuy, quotes):
         budget = asset.availableCash / len(stockToBuy)
         orders = []
         for buyStock in stockToBuy:
-            buyPrice = quotes[buyStock].high  # 购买价格为上分钟最高价
+            buyPrice = quotes[buyStock].open  # 购买价格为上分钟最高价
             buyAmount = int(np.round(budget/buyPrice, -2))  # 预算除购买价格作为购入量
             if buyPrice > 0 and buyAmount >= 100:
                 orders.append([buyStock, buyPrice, buyAmount, 'BUY'])  # 委托购买
@@ -368,20 +381,21 @@ def sellAllPositionInStocks(sdk, stockToSell, quotes):
         positions = sdk.getPositions()  # 查持仓
         for pos in positions:
             if pos.code in stockToSell:
-                sellPrice = quotes[pos.code].low  # 设置出售价格为上分钟最低价
+                sellPrice = quotes[pos.code].open  # 设置出售价格为上分钟最低价
                 sellAmount = pos.optPosition
                 if sellPrice > 0 and sellAmount > 100:
                     orders.append([pos.code, sellPrice, sellAmount, 'SELL'])  # 委托出售
         if orders:
             sdk.makeOrders(orders)
             sdk.sdklog(orders, 'sell')  # 将出售记入日志
+# currently sell at open
 def sellStocksWithCap(sdk, stockToSellWithCap, quotes):
     quoteStocks = quotes.keys()
     stockToSell = list(set(stockToSellWithCap.index.tolist()) & set(quoteStocks))
     if stockToSell:
         orders = []
         for stock in stockToSell:
-            sellPrice = quotes[stock].low
+            sellPrice = quotes[stock].open
             sellAmount = int(np.round(-stockToSellWithCap.loc[stock]/sellPrice, -2))
             if sellPrice > 0 and sellAmount >= 100:
                 orders.append([stock, sellPrice, sellAmount, "SELL"])
