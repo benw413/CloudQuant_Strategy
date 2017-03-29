@@ -6,7 +6,7 @@ import statsmodels.api as sm
 from CloudQuant import MiniSimulator  # 导入云宽客SDK
 
 
-INIT_CAP = 10000000  # init capital
+INIT_CAP = 1000000000  # init capital
 START_DATE = '20120101'  # backtesting start
 END_DATE = '20170301'  # backtesting end
 
@@ -14,7 +14,6 @@ PERIOD = 30  # the period used to calculate win/lose
 UP_BAND = 0.6  # the buy signal band
 DOWN_BAND = 0.25  # the sell signal band
 FACTORS = ["LZ_GPA_VAL_PB",
-           "LZ_GPA_VAL_PE",
            "LZ_GPA_FIN_IND_ARTURNDAYS",
            "LZ_GPA_FIN_IND_DEBTTOASSETS",
            "LZ_GPA_FIN_IND_OPTODEBT",
@@ -34,7 +33,7 @@ config = {
     'executeMode': 'D',
     'feeRate': 0.001,
     'feeLimit': 5,
-    'strategyName': 'Strategy_weightedContrastP30',  # strategy name
+    'strategyName': 'Strategy_weightedstd-rtmin',  # strategy name
     "logfile": "maday",
     'dealByVolume': True,
     "memorySize": 5,
@@ -136,7 +135,7 @@ def strategy(sdk):
         # set optimal weight to in position aseests
         if stockToBuy:
             # selecting stock in industry
-            stockToBuy = selectBySomeMethod(sdk, stockToBuy)
+            #stockToBuy = selectBySomeMethod(sdk, stockToBuy)
             currentHolding = [i.code for i in sdk.getPositions()]
             # intend to hold these stocks
             intend = list(set(currentHolding) | set(stockToBuy))
@@ -177,7 +176,7 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexC
 
     '''1st handling nan values in rts, reset stockCodeList'''
     # should drop nan values of rts that is too much to calc OLS and should drop it from label   ##
-    drop_label = rts.columns[rts.isnull().sum() > (exposurePeriod-numOfFactor)].tolist()               ##
+    drop_label = rts.columns[rts.isnull().sum() > (exposurePeriod-numOfFactor-1)].tolist()               ##
     stockCodeList = list(set(stockCodeList) - set(drop_label))
     ###############################################################################################
     ### rts    rt 1 step    |rt 2 step .shift(1) |  rts 3 step.shift(-1) | rts 4 step .drop()
@@ -205,7 +204,7 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexC
         dt = pd.DataFrame(data=sdk.getFieldData(name, (exposurePeriod)*PERIOD), columns=stockCodes)[stockCodeList].iloc[trials]
         # normlise the factors
         dt = dt.apply(lambda x: (x-x.mean()) / x.std())
-        drop_labels = dt.columns[dt.isnull().sum() > (exposurePeriod-numOfFactor)].tolist()
+        drop_labels = dt.columns[dt.isnull().sum() > (exposurePeriod-numOfFactor-1)].tolist()
         drop_label.extend(drop_labels)
         # save only stocks we are interested in
         factorDataList.append(dt.drop(dt.index[-1]))
@@ -264,25 +263,31 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexC
 
     # 3. decide weight on asset to optimize
     # 3.1 should be diagonalized specific risk variance factor_return_residual
-    speciRisk = np.identity(n=len(stockCodeList), dtype=float)*factor_return_residual.std().values**2
-    F = np.dot(factor_return_df.values.transpose(), factor_return_df.values)
-    facRisk = np.dot(np.dot(stockExposure.values, F), stockExposure.values.transpose())
+    speciRisk = matrix(np.identity(n=len(stockCodeList), dtype=float) * (factor_return_residual.std().values ** 2),
+                       (len(stockCodeList), len(stockCodeList)))
+    # F = np.dot(factor_return_df.values.transpose(), factor_return_df.values)
+    f = matrix(factor_return_df.values.tolist(), (len(rts.index), len(FactorNames)))
+    F = f.T * f
+    exp = matrix(stockExposure.values.tolist(), (len(stockCodeList), len(FactorNames)))
+    facRisk = exp * F * exp.T
     # the expected returns
     exprts = -1 * rts[stockCodeList].mean().values
-
     # 3.2 solving the QP min X'SigX - expRts'X
-    P =matrix((facRisk + speciRisk).tolist())  # ---  #Assest X #Asset # the quadratics term
-    q = matrix(exprts.tolist())  # first oreder term
+    P =facRisk + speciRisk  # ---  #Assest X #Asset # the quadratics term
+    q = -1 * matrix(exprts, (len(stockCodeList), 1))  # first oreder term
     # now minimize the totoal risk with respect to certain weight
     # import cvxopt to solve
     # the constrains
-    A = matrix(np.ones((1, len(stockCodeList))), (1, len(stockCodeList))) #要改
+    # summation of 1
+    A = matrix(np.ones((1, len(stockCodeList))), (1, len(stockCodeList)))
     b = matrix(1.0)
-
-    Garray = np.identity(len(stockCodeList), dtype=float)*(-1)
-    G = matrix(Garray.tolist())
-    h = matrix(np.zeros((1, len(stockCodeList))).tolist())
+    # only positive value of x and u'x > 0
+    d = matrix(np.identity(len(stockCodeList)))
+    u = matrix(exprts, (1, len(stockCodeList)))
+    G = -1 * matrix([d, u])
+    h = matrix(np.zeros((len(stockCodeList)+1, 1)))
     # solving the QP
+    # settings of the solvers
     sol = solvers.qp(P, q, G, h, A, b)
     soldf = pd.Series(index=stockCodeList, data=np.array(sol["x"]).reshape(1, len(stockCodeList))[0])
     return soldf
