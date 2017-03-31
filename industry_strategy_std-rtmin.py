@@ -33,7 +33,7 @@ config = {
     'executeMode': 'D',
     'feeRate': 0.001,
     'feeLimit': 5,
-    'strategyName': 'Strategy_weightedstd-rtmin',  # strategy name
+    'strategyName': 'Strategy_weightedstd-rtmin_selcted',  # strategy name
     "logfile": "maday",
     'dealByVolume': True,
     "memorySize": 5,
@@ -135,7 +135,7 @@ def strategy(sdk):
         # set optimal weight to in position aseests
         if stockToBuy:
             # selecting stock in industry
-            #stockToBuy = selectBySomeMethod(sdk, stockToBuy)
+            stockToBuy = selectBySomeMethod(sdk, stockToBuy)
             currentHolding = [i.code for i in sdk.getPositions()]
             # intend to hold these stocks
             intend = list(set(currentHolding) | set(stockToBuy))

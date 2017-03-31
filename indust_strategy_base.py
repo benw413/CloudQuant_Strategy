@@ -33,7 +33,7 @@ config = {
     'executeMode': 'D',
     'feeRate': 0.001,
     'feeLimit': 5,
-    'strategyName': 'Strategy_base',  # strategy name
+    'strategyName': 'Strategy_base_selcted',  # strategy name
     "logfile": "maday",
     'dealByVolume': True,
     "memorySize": 5,
@@ -133,7 +133,7 @@ def strategy(sdk):
         if stockToSell:
             sellAllPositionInStocks(sdk, stockToSell, quotes)
         if stockToBuy:
-            #stockToBuy = selectBySomeMethod(sdk, stockToBuy)
+            stockToBuy = selectBySomeMethod(sdk, stockToBuy)
             buyStocks(sdk, stockToBuy, quotes)
         # update the state
         sdk.setGlobal("STATE", newState)

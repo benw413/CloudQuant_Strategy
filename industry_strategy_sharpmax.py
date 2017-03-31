@@ -12,7 +12,7 @@ END_DATE = '20170301'  # backtesting end
 
 PERIOD = 30  # the period used to calculate win/lose
 UP_BAND = 0.6  # the buy signal band
-DOWN_BAND = 0.25  # the sell signal band
+DOWN_BAND = 0.15  # the sell signal band
 FACTORS = ["LZ_GPA_VAL_PB",
            "LZ_GPA_FIN_IND_ARTURNDAYS",
            "LZ_GPA_FIN_IND_DEBTTOASSETS",
@@ -33,7 +33,7 @@ config = {
     'executeMode': 'D',
     'feeRate': 0.001,
     'feeLimit': 5,
-    'strategyName': 'Strategy_sharpMax',  # strategy name
+    'strategyName': 'Strategy_sharpMax_selcted_l015_bigq0.9', # strategy name
     "logfile": "maday",
     'dealByVolume': True,
     "memorySize": 5,
@@ -135,7 +135,7 @@ def strategy(sdk):
         # set optimal weight to in position aseests
         if stockToBuy:
             # selecting stock in industry
-            #stockToBuy = selectBySomeMethod(sdk, stockToBuy)
+            stockToBuy = selectBySomeMethodS(sdk, stockToBuy)
             currentHolding = [i.code for i in sdk.getPositions()]
             # intend to hold these stocks
             intend = list(set(currentHolding) | set(stockToBuy))
@@ -346,6 +346,16 @@ def selectBySomeMethod(sdk, stockToBuy):
     rts = (df / df.shift(1) - 1)
     sharpe = rts.mean() / rts.std()
     good = sharpe[sharpe > sharpe.median()]
+    return good.index.tolist()
+def selectBySomeMethodS(sdk, stockToBuy):
+    buy = []
+    stockCodes = sdk.getStockList()
+    # the history volumne weighted ave price
+    df = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_QUOTE_TCLOSE", round(PERIOD/2)), columns=stockCodes)[stockToBuy]
+    # the daily returns
+    rts = (df / df.shift(1) - 1)
+    sharpe = rts.mean() / rts.std()
+    good = sharpe[sharpe > sharpe.quantile(0.9)]
     return good.index.tolist()
 # the buy stock methods, currently buy at open
 def buyStocksWithCap(sdk, stockToBuyWithCap, quotes):
