@@ -7,12 +7,13 @@ from CloudQuant import MiniSimulator  # 导入云宽客SDK
 
 
 INIT_CAP = 1000000000  # init capital
-START_DATE = '20160101'  # backtesting start
+START_DATE = '20060101'  # backtesting start
 END_DATE = '20170301'  # backtesting end
 
 PERIOD = 30  # the period used to calculate win/lose
-UP_BAND = 0.1  # the buy signal band
-DOWN_BAND = -0.15  # the sell signal band
+UP_BAND = 0.1  # the initial up band
+DOWN_BAND = -0.2  # the initial down band
+stdObsers = 20  # the param
 FACTORS = ["LZ_GPA_VAL_PB",
            "LZ_GPA_FIN_IND_ARTURNDAYS",
            "LZ_GPA_FIN_IND_DEBTTOASSETS",
@@ -21,7 +22,7 @@ FACTORS = ["LZ_GPA_VAL_PB",
            "LZ_GPA_FIN_IND_QFA_CGRGR",
            # 其他因子
            "LZ_GPA_VAL_TURN",# turn over
-           "LZ_GPA_DERI_LnFloatCap"]
+           "LZ_GPA_VAL_A_TCAP"]
 config = {
     'username': 'zhouyusheng2016',
     'password': '6403583love',
@@ -51,7 +52,7 @@ def initial(sdk):
                      "LZ_GPA_QUOTE_TVOLUME",  # trading volume in hands
                      "LZ_GPA_SLCIND_STOP_FLAG",  # stop trading
                      "LZ_GPA_SLCIND_ST_FLAG"])  # s.t. stocks
-    sdk.prepareData(FACTORS)
+    #sdk.prepareData(FACTORS)
 def initPerDay(sdk):
     stockCodeList = sdk.getStockList()
     stockCodeListFiltered1 = removeSTandStopStocks(sdk, stockCodeList, 2*PERIOD)
@@ -66,6 +67,8 @@ def initPerDay(sdk):
 
     if sdk.getGlobal("MT") is None:
         mtdf = pd.DataFrame(columns=sdk.getStockList())
+        ''' this may casue real time trading problem,since stockCodeList is increasing in size'''
+        ''' try to avoid it'''
         sdk.setGlobal("MT", mtdf)
 
 def removeSTandStopStocks(sdk, stockCodes, period):
@@ -81,6 +84,14 @@ def removeSTandStopStocks(sdk, stockCodes, period):
     l1 = f1.index[f1].tolist()
     l2 = f2.index[f2].tolist()
     return list(set(l1) & set(l2))
+def removeStopStocks(sdk, stockCodes, period):
+    # stop trading stocks
+    list1 = []
+    for stock in stockCodes:
+        closeList = [i.close for i in sdk.getLatest(code=stock, count=period + 1, timefreq="1D")]
+        if len(closeList) == period+1:
+            list1.append(stock)
+    return list1
 def removeTodayInvalidStocks(sdk, stockCodes):
     dict1 = {i.code: i.open for i in sdk.getLatest(code=stockCodes, timefreq="1D")}
     dict2 = {i.code: i.close for i in sdk.getLatest(code=stockCodes, timefreq="1D")}
@@ -100,20 +111,47 @@ def removeSmallCapStocks(sdk, stockCodes, period, quantile):
                            columns=stockCodeList)[stockCodes]
     v = tradcap.mean().quantile(quantile)
     return tradcap.columns[tradcap.mean() > v].tolist()
-def updateGlobalMt(sdk, series, tail):
+def updateGlobalMt(sdk, series):
     mt = sdk.getGlobal("MT")
+    # dealing with the case a new stock come into stockCodeList
+    dif = len(sdk.getStockList()) - len(mt.columns)
+    if dif > 0:
+        # extrating new listed stock codes
+        # newCol[0] should be the first added and newCol[-1] should be the last added
+        newCol = sdk.getStockList()[-dif:]
+        for i, item in enumerate(newCol):
+            mt[item] = np.nan
     mt.loc[len(mt.index)] = series
-    if len(mt) > tail:
-        mt = mt.tail(tail)
-        print(mt)
     sdk.setGlobal("MT", mt)
 def strategy(sdk):
-    # last signal
-    lastMt = sdk.getGlobal("MT")
-    # update the MT signal to todays price
-    mtseries = stockBMT(sdk, sdk.getGlobal("Pool"), 20)
-    updateGlobalMt(sdk, mtseries, 20)
-    print(sdk.getGlobal("MT"))
+    # dict of stock: index in stockCodelist for stocks in Pool
+    pooldict = {s: sdk.getStockList().index(s) for s in sdk.getGlobal("Pool")}
+    # since we update signal using Close price, at the beginning of each trading day, we can only use
+    # yesterday's signal as the latest signal
+    latestMt = sdk.getGlobal("MT").tail(1)  # yesterday' signal
+    # set stock individualized standard
+    if len(sdk.getGlobal("MT")) > stdObsers:
+        recentMts = sdk.getGlobal("MT").tail(stdObsers)
+        mtStds = recentMts.std()
+        mtMeans = recentMts.mean()
+        UP_BAND = mtMeans + mtStds
+        DOWN_BAND = mtMeans - mtStds
+    print(UP_BAND)
+    print(DOWN_BAND)
+    # find stocks with Hight M and High T
+    highMStocks = latestMt.columns[latestMt > UP_BAND].tolist()
+    highTStocks = latestMt.columns[latestMt < DOWN_BAND].tolist()
+    ''' if the stock lose its position in HM or HT, we should empty our position on this stock'''
+    lastHighMStocks = sdk.getGlobal("HM")
+    lastHighTStocks = sdk.getGlobal("HT")
+
+    # update the MT signal to todays price, should be done at end of strategy
+    """stock pool must be filtered, since there may stop stocks in current holdings"""
+    mtseries = stockBMT(sdk, removeStopStocks(sdk, sdk.getGlobal("Pool")), 20, 20)
+    updateGlobalMt(sdk, mtseries)
+    """set the new Hight M and Hight T stocks"""
+    sdk.setGlobal("HM", highMStocks)
+    sdk.setGlobal("HT", highTStocks)
 def getStocksForIndustry(sdk, index):
     stockCodes = sdk.getStockList()
     industry = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_INDU_ZX", 1), columns=stockCodes)
@@ -123,26 +161,33 @@ def getStocksForIndustry(sdk, index):
 # compute the signal
 # measures the effect of momentum, gives todays mt signal in a dataframe
 def stockBMT(sdk, stockCodes, numOfObservatios, period=1):
-    trials = np.array(range(0, period * numOfObservatios, period))
-    closeP = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_QUOTE_TCLOSE", period*numOfObservatios),
-                          columns=sdk.getStockList())[stockCodes].iloc[trials]
-    todayClose = {i.code: i.close for i in sdk.getLatest(code=stockCodes, count=0, timefreq="1D")}
-    todayCloseP = pd.Series(data=todayClose.values(), index=todayClose.keys()).loc[stockCodes]
-    closeP.loc[len(closeP)] = todayCloseP
-    # get the adj factor for stock at today
-    adj = pd.DataFrame(columns=stockCodes)
+    """need to make sure that stockCodes has no stock with Nan value for last numberOfObser * period """
+    priceAdjdf = pd.DataFrame(columns=stockCodes)
     for stock in stockCodes:
-        stockAdj = {i: item.factor
-                    for i, item in enumerate(sdk.getLatest(code=stock, count=period*numOfObservatios, timefreq="1D"))}
-        todayAdjFactor = pd.Series(data=stockAdj.values(), index=stockAdj.keys())
-        adj[stock] = todayAdjFactor
+        priceadj = {i: item.close * item.factor
+                    for i, item in enumerate(sdk.getLatest(code=stock, count=period * numOfObservatios, timefreq="1D"))}
+        stockPriceAdj = pd.Series(data=priceadj.values(), index=priceadj.keys())
+        priceAdjdf[stock] = stockPriceAdj
 
-    p = closeP * adj  # froward weighted price
+    p = priceAdjdf.loc[::-period].loc[::-1]
     rts = p / p.shift(1) - 1
-    rts.drop(rts.index[0])  # drop the NaN value of returns
+    rts.drop(rts.index[0], inplace=True)  # drop the NaN value of returns
     cluster = rts > 0  # the binary state of rts
     mt = cluster.apply(lambda x: binaryDet(x))
     return mt
+def checkLastPeriodPerformance(sdk, stockCodes, period):
+    priceAdjdf = pd.DataFrame(columns=stockCodes)
+    for stock in stockCodes:
+        priceadj = {i: item.close * item.factor
+                    for i, item in enumerate(sdk.getLatest(code=stock, count=period, timefreq="1D"))}
+        stockPriceAdj = pd.Series(data=priceadj.values(), index=priceadj.keys())
+        priceAdjdf[stock] = stockPriceAdj
+    p = priceAdjdf
+    rts = p / p.shift(1) - 1
+    rts.drop(rts.index[0], inplace=True)  # drop the first line NaN value of returns
+    win = rts.mean() > 0
+    lose = rts.mean() < 0
+    return win[win].index.tolist(), lose[lose].index.tolist()
 # count the number of given state stays the same
 def binaryDet(series):
     states = [False, True]

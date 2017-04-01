@@ -9,11 +9,13 @@ df = pd.read_csv(filepath_or_buffer=filepath).iloc[range(0, 2970)]
 index = df[df.columns[0]].loc[period+2:]
 cum = pd.read_csv(filepath_or_buffer=filepath2).iloc[range(0, 2970)]
 df = df * cum
+df = df.loc[::5]
 df.dropna(axis=1, inplace=True)
 date = pd.to_datetime(index.astype(str))
 df = df / df.shift(1) - 1
 df.drop(df.index[0], inplace=True)
 a = df > 0
+print(df.columns)
 def countBinary(series):
     states = [False, True]
     same1 = 0
@@ -51,14 +53,14 @@ for i, trial in enumerate(a.index):
         c.loc[i-period] = d.apply(lambda x: countBinary(x))
 result = c.set_index(date)
 z = np.zeros((1, len(result.index)))
-ii = 134
+ii = 1
 zero = pd.Series(data=z[0], index=result.index)
 sig = result[result.columns[ii]]
 mean = result[result.columns[ii]].mean()
 std = result[result.columns[ii]].std()
 
-m1s = (mean+0.5*std)*pd.Series(data=np.ones((1, len(result.index)))[0], index=result.index)
-m_1s = (mean-0.5*std)*pd.Series(data=np.ones((1, len(result.index)))[0], index=result.index)
+m1s = (mean+std)*pd.Series(data=np.ones((1, len(result.index)))[0], index=result.index)
+m_1s = (mean-std)*pd.Series(data=np.ones((1, len(result.index)))[0], index=result.index)
 
 sig.plot()
 m1s.plot()

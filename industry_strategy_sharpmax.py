@@ -21,7 +21,7 @@ FACTORS = ["LZ_GPA_VAL_PB",
            "LZ_GPA_FIN_IND_QFA_CGRGR",
            # 其他因子
            "LZ_GPA_VAL_TURN",# turn over
-           "LZ_GPA_DERI_LnFloatCap"]
+           "LZ_GPA_VAL_A_TCAP"]
 config = {
     'username': 'zhouyusheng2016',
     'password': '6403583love',
