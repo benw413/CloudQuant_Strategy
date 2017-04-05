@@ -11,8 +11,9 @@ START_DATE = '20120101'  # backtesting start
 END_DATE = '20170301'  # backtesting end
 
 PERIOD = 30  # the period used to calculate win/lose
-UP_BAND = 0.6  # the buy signal band
-DOWN_BAND = 0.25  # the sell signal band
+UP_BAND = 0.1  # the initial up band
+DOWN_BAND = -0.2  # the initial down band
+stdObsers = 20  # the param
 FACTORS = ["LZ_GPA_VAL_PB",
            "LZ_GPA_FIN_IND_ARTURNDAYS",
            "LZ_GPA_FIN_IND_DEBTTOASSETS",
@@ -21,7 +22,7 @@ FACTORS = ["LZ_GPA_VAL_PB",
            "LZ_GPA_FIN_IND_QFA_CGRGR",
            # 其他因子
            "LZ_GPA_VAL_TURN",# turn over
-           "LZ_GPA_DERI_LnFloatCap"]
+           "LZ_GPA_VAL_A_TCAP"]
 config = {
     'username': 'zhouyusheng2016',
     'password': '6403583love',
@@ -33,120 +34,253 @@ config = {
     'executeMode': 'D',
     'feeRate': 0.001,
     'feeLimit': 5,
-    'strategyName': 'Strategy_weightedstd-rtmin_selcted',  # strategy name
+    'strategyName': 'stock_mt_strategy_m+-1s',  # strategy name
     "logfile": "maday",
     'dealByVolume': True,
     "memorySize": 5,
     'assetType': 'STOCK'
 }
-
+"""this is the stock mt method using mean+/-std as band"""
+"""frame work methods"""
 def initial(sdk):
-    # data prepare -- industry index, industry classification ZX
-    #              -- quote information
-    sdk.prepareData(["LZ_GPA_CMFTR_CUM_FACTOR",
-                     "LZ_GPA_QUOTE_TCLOSE",
-                     "LZ_GPA_INDXQUOTE_CLOSE",
-                     "LZ_GPA_INDU_ZX",
-                     "LZ_GPA_SLCIND_STOP_FLAG"])
-    sdk.prepareData(FACTORS)
     global dayCounter
     dayCounter = 0
+    # data prepare -- industry index, industry classification ZX
+    #              -- quote information
+    sdk.prepareData(["LZ_GPA_QUOTE_TCLOSE",
+                     "LZ_GPA_INDXQUOTE_CLOSE",
+                     "LZ_GPA_INDU_ZX",
+                     "LZ_GPA_VAL_A_TCAP",  # trading capital
+                     "LZ_GPA_QUOTE_TVOLUME",  # trading volume in hands
+                     "LZ_GPA_SLCIND_STOP_FLAG",  # stop trading
+                     "LZ_GPA_SLCIND_ST_FLAG"])  # s.t. stocks
+    #sdk.prepareData(FACTORS)
 def initPerDay(sdk):
+    stockCodeList = sdk.getStockList()
+    stockCodeListFiltered1 = removeSTStocks(sdk, stockCodeList, 2*PERIOD)
+    stockCodeListFiletered2 = removeIlliquidStocks(sdk, stockCodeListFiltered1, 2*PERIOD, 0.5)
+    stockCodeListFiletered3 = removeSmallCapStocks(sdk, stockCodeListFiletered2, 2*PERIOD, 0.5)
+    stockCodeListFiletered4 = removeTodayInvalidStocks(sdk, stockCodeListFiletered3)
+
+
+    currentStock = [i.code for i in sdk.getPositions()]
+    sdk.setGlobal("Holdings", currentStock)
+    pool = list(set(stockCodeListFiletered4) | set(currentStock))
+    sdk.setGlobal("Pool", pool)
+
+    # initialized the global parameter
+    if sdk.getGlobal("MT") is None:
+        stockCodeList = sdk.getStockList()
+        mtdf = pd.DataFrame(data=np.zeros((1, len(stockCodeList))), columns=stockCodeList)
+        sdk.setGlobal("MT", mtdf)
+    if sdk.getGlobal("HM") is None:
+        sdk.setGlobal("HM", set())
+    if sdk.getGlobal("HT") is None:
+        sdk.setGlobal("HT", set())
+
     global dayCounter
-    if dayCounter % PERIOD == 0:
-        currentHolding = [i.code for i in sdk.getPositions()]
-        buy, sell = getSignal(getURatio(sdk))
-        buy.extend(sell)
-        stocks = []
-        for i in buy:
-            stocks.extend(getStocksForIndustry(sdk, i))
-        pool = list(set(stocks) | set(currentHolding))
-        sdk.setGlobal("POOL", pool)
     dayCounter += 1
+def strategy(sdk):
+    updateMtPeriod = 5
+    UP_BAND = 0.2  # the initial up band
+    DOWN_BAND = -0.2  # the initial down band
+    stdObsers = 20  # the param
+    # dict of stock: index in stockCodelist for stocks in Pool
+    #pooldict = {s: sdk.getStockList().index(s) for s in sdk.getGlobal("Pool")}
+    # since we update signal using Close price, at the beginning of each trading day, we can only use
+    # yesterday's signal as the latest signal
+
+    latestMt = sdk.getGlobal("MT").loc[sdk.getGlobal("MT").index[-1]]  # yesterday' signal
+    # set stock individualized standard
+    if len(sdk.getGlobal("MT")) > stdObsers:
+        recentMts = sdk.getGlobal("MT").tail(stdObsers)
+        mtStds = recentMts.std()
+        mtMeans = recentMts.mean()
+        UP_BAND = mtMeans+mtStds
+        DOWN_BAND = mtMeans+mtStds
+
+    # find stocks with Hight M and High T
+    highMStocks = set(latestMt[latestMt > UP_BAND].index.tolist())
+    highTStocks = set(latestMt[latestMt < DOWN_BAND].index.tolist())
+    ''' if the stock lose its position in HM or HT, we should empty our position on this stock'''
+    lastHighMStocks = sdk.getGlobal("HM")
+    lastHighTStocks = sdk.getGlobal("HT")
+    """classify the stocks"""
+    newInHM = []
+    leaveHM = []
+    newInHT = []
+    leaveHT = []
+    if highMStocks - lastHighMStocks:
+        newInHM = list(highMStocks - lastHighMStocks)
+    elif lastHighMStocks - highMStocks:
+        leaveHM = list(lastHighMStocks - highMStocks)
+    elif highTStocks - lastHighTStocks:
+        newInHT = list(highTStocks - lastHighTStocks)
+    elif lastHighTStocks - highTStocks:
+        leaveHT = list(lastHighTStocks - highTStocks)
+    """check its recent behavior, and operate on it"""
+    stockToBuy = []
+    stockToSell = []
+    # sell the leaving stock
+    stockToSell.extend(leaveHM)
+    stockToSell.extend(leaveHT)
+    if newInHM:
+        buy_1, sell_1 = checkLastPeriodPerformance(sdk, newInHM, updateMtPeriod)
+        stockToSell.extend(sell_1)
+        stockToBuy.extend(buy_1)
+    if newInHT:
+        sell_2, buy_2 = checkLastPeriodPerformance(sdk, newInHT, updateMtPeriod)
+        stockToSell.extend(sell_2)
+        stockToBuy.extend(buy_2)
+
+    if stockToBuy or stockToSell:
+        quotes = sdk.getQuotes(sdk.getGlobal("Pool"))
+        if stockToBuy:
+            buyStocks(sdk, stockToBuy, quotes)
+        if stockToSell:
+            sellAllPositionInStocks(sdk, stockToSell, quotes)
+
+    if (dayCounter - 1) % updateMtPeriod == 0:
+        # update the MT signal to todays price, should be done at end of strategy
+        """stock pool must be filtered, since there may stop stocks in current holdings"""
+        # using last 20 observations
+        mtseries = stockBMT(sdk, sdk.getGlobal("Pool"), 20, updateMtPeriod)
+        updateGlobalMt(sdk, mtseries)
+        """set the new Hight M and Hight T stocks"""
+        sdk.setGlobal("HM", highMStocks)
+        sdk.setGlobal("HT", highTStocks)
+"""stock filtering methods"""
+def removeSTStocks(sdk, stockCodes, period):
+    stockCodeList = sdk.getStockList()
+    st = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_SLCIND_ST_FLAG", period),
+                      columns=stockCodeList)[stockCodes]
+    # if st and stop the value should be 1, NaN present normally traded
+    f2 = st.isnull().any()
+    # list of stockcodes that have all nan in last period
+    l2 = f2.index[f2].tolist()
+    return l2
+def removeStopStocks(sdk, stockCodes, period):
+    # stop trading stocks
+    list1 = []
+    for stock in stockCodes:
+        closeList = [i.close for i in sdk.getLatest(code=stock, count=period + 1, timefreq="1D")]
+        if len(closeList) == period+1:
+            list1.append(stock)
+    return list1
+def removeTodayInvalidStocks(sdk, stockCodes):
+    dict1 = {i.code: i.open for i in sdk.getLatest(code=stockCodes, timefreq="1D")}
+    dict2 = {i.code: i.close for i in sdk.getLatest(code=stockCodes, timefreq="1D")}
+    valid = set(dict1.keys()) & set(dict2.keys())
+    return list(valid)
+def removeIlliquidStocks(sdk, stockCodes, period, quantile):
+    # returns the stockcodes with larger the quantile trading volumes
+    stockCodeList = sdk.getStockList()
+    liquid = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_QUOTE_TVOLUME", period),
+                          columns=stockCodeList)[stockCodes]
+    v = liquid.mean().quantile(quantile)
+    return liquid.columns[liquid.mean() > v].tolist()
+def removeSmallCapStocks(sdk, stockCodes, period, quantile):
+    # returns the stockcodes with larger the quantile trading capital
+    stockCodeList = sdk.getStockList()
+    tradcap = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_VAL_A_TCAP", period),
+                           columns=stockCodeList)[stockCodes]
+    v = tradcap.mean().quantile(quantile)
+    return tradcap.columns[tradcap.mean() > v].tolist()
+"""operating methods"""
+def updateGlobalMt(sdk, series):
+    mt = sdk.getGlobal("MT")
+    # dealing with the case a new stock come into stockCodeList
+    dif = len(sdk.getStockList()) - len(mt.columns)
+    if dif > 0:
+        # extrating new listed stock codes
+        # newCol[0] should be the first added and newCol[-1] should be the last added
+        newCol = sdk.getStockList()[-dif:]
+        for i, item in enumerate(newCol):
+            mt[item] = np.nan
+    mt.loc[len(mt.index)] = series
+    sdk.setGlobal("MT", mt)
+def checkLastPeriodPerformance(sdk, stockCodes, period):
+    priceAdjdf = pd.DataFrame(columns=stockCodes)
+    for stock in stockCodes:
+        priceadj = {i: item.close * item.factor
+                    for i, item in enumerate(sdk.getLatest(code=stock, count=period, timefreq="1D"))}
+        stockPriceAdj = pd.Series(data=priceadj.values(), index=priceadj.keys())
+        priceAdjdf[stock] = stockPriceAdj
+    p = priceAdjdf
+    rts = p / p.shift(1) - 1
+    rts.drop(rts.index[0], inplace=True)  # drop the first line NaN value of returns
+    win = rts.mean() > 0
+    lose = rts.mean() < 0
+    return win[win].index.tolist(), lose[lose].index.tolist()
 def getStocksForIndustry(sdk, index):
     stockCodes = sdk.getStockList()
     industry = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_INDU_ZX", 1), columns=stockCodes)
     series = industry.iloc[0]
     list = series[series == index].index.tolist()
     return list
-def getSignal(array):
-    buyIndex = []
-    sellIndex = []
-    for index, i in enumerate(array):
-        if i > UP_BAND:
-            buyIndex.append(index+1)
-        if i < DOWN_BAND:
-            sellIndex.append(index+1)
-    return buyIndex, sellIndex
-def getURatio(sdk):
+# compute the signal
+# measures the effect of momentum, gives todays mt signal in a dataframe
+def stockBMT(sdk, stockCodes, numOfObservatios, period=1):
+    """need to make sure that stockCodes has no stock with Nan value for last numberOfObser * period """
+    priceAdjdf = pd.DataFrame(columns=stockCodes)
+    for stock in stockCodes:
+        priceadj = {i: item.close * item.factor
+                    for i, item in enumerate(sdk.getLatest(code=stock, count=period * numOfObservatios, timefreq="1D"))}
+        stockPriceAdj = pd.Series(data=priceadj.values(), index=priceadj.keys())
+        priceAdjdf[stock] = stockPriceAdj
 
-    stockCodes = sdk.getStockList()
-    # adjustment for div and event like split
-    cmftr = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_CMFTR_CUM_FACTOR", PERIOD),
-                         columns=stockCodes)
-    # close price of all stocks
-    df = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_QUOTE_TCLOSE", PERIOD),
-                      columns=stockCodes)
+    p = priceAdjdf.loc[::-period].loc[::-1]
+    rts = p / p.shift(1) - 1
+    rts.drop(rts.index[0], inplace=True)  # drop the NaN value of returns
+    cluster = rts > 0  # the binary state of rts
+    mt = cluster.apply(lambda x: binaryDet(x))
+    return mt
+# use last period median return as measure of last period performance
+def checkLastPeriodPerformance(sdk, stockCodes, period):
+    priceAdjdf = pd.DataFrame(columns=stockCodes)
+    for stock in stockCodes:
+        priceadj = {i: item.close * item.factor
+                    for i, item in enumerate(sdk.getLatest(code=stock, count=period, timefreq="1D"))}
+        stockPriceAdj = pd.Series(data=priceadj.values(), index=priceadj.keys())
+        priceAdjdf[stock] = stockPriceAdj
+    p = priceAdjdf
+    rts = p / p.shift(1) - 1
+    rts.drop(rts.index[0], inplace=True)  # drop the first line NaN value of returns
+    win = rts.median() > 0
+    lose = rts.median() < 0
+    return win[win].index.tolist(), lose[lose].index.tolist()
+# count the number of given state stays the same
+def binaryDet(series):
+    states = [False, True]
+    same1 = 0
+    same2 = 0
+    transit1 = 0
+    transit2 = 0
 
-    # backward adjusted stock price
-    dt = cmftr*df
+    for i, state in enumerate(series):
+        if i == 0:
+            continue
+            # omit the first state
+        if series.iloc[i-1] == states[0]:
+            if state == states[0]:
+                same1 += 1
+            else:
+                transit1 += 1
+        if series.iloc[i-1] == states[1]:
+            if state == states[1]:
+                same2 += 1
+            else:
+                transit2 += 1
 
-    # find trend in last period
-    start = dt.loc[dt.index[0]]  # value at period start(n days before)
-    end = dt.loc[dt.index[-1]]  # value at period end(today)
-    upflag = end > start  # stock whose value are increasing during last PERIOD
-
-    upRatio = []
-    for i in range(1, 30):  # each industry in ZX
-        codes = getStocksForIndustry(sdk, i)
-        ratio = upflag.loc[codes].sum() / float(len(codes))
-        upRatio.append(ratio)
-    upRatio = np.array(upRatio)
-    return upRatio
-def strategy(sdk):
-    sdk.sdklog(sdk.getNowDate(), 'now')
-    global dayCounter
-    if (dayCounter - 1) % PERIOD == 0:
-        # the historical state
-        lastState = sdk.getGlobal("STATE")
-        # the current state
-        buy, sell = getSignal(getURatio(sdk))
-        newState = np.zeros(29, dtype=int)
-        for _, j in enumerate(buy):
-            newState[j-1] = 1
-        for _, j in enumerate(sell):
-            newState[j-1] = -1
-        #  check if buy or sell signal came in
-
-        industryIndex = np.array(range(1, 30))
-        industToBuy = industryIndex[np.logical_and(newState == 1, np.logical_or(lastState == 0, lastState == -1))]
-        industToSell = industryIndex[np.logical_and(newState == -1, np.logical_or(lastState == 0, lastState == 1))]
-
-        stockToBuy = []
-        for i in industToBuy:
-            stockToBuy.extend(getStocksForIndustry(sdk, i))
-        stockToSell = []
-        for i in industToSell:
-            stockToSell.extend(getStocksForIndustry(sdk, i))
-        # get the latest price
-        quotes = sdk.getQuotes(sdk.getGlobal("POOL"))
-        if stockToSell:
-            sellAllPositionInStocks(sdk, stockToSell, quotes)
-        # set optimal weight to in position aseests
-        if stockToBuy:
-            # selecting stock in industry
-            stockToBuy = selectBySomeMethod(sdk, stockToBuy)
-            currentHolding = [i.code for i in sdk.getPositions()]
-            # intend to hold these stocks
-            intend = list(set(currentHolding) | set(stockToBuy))
-            if intend:
-                optWeight = getOptWeight(sdk, intend, FACTORS, 12, "000985")
-                cap = get_percent_capital(sdk, quotes)
-                adjustPosition(sdk, optWeight, quotes, cap)  # adjust portfolio with weight
-        #if stockToBuy:
-         #   buyStocks(sdk, stockToBuy, quotes)
-        # update the state
-        sdk.setGlobal("STATE", newState)
+    if same1 + transit1 == 0:
+        return 1  # the case all state are True, perfect pos momentum, 1 as perfect momentum
+    else:
+        p = float(same1) / float(same1 + transit1)
+    if same2 + transit2 == 0:
+        return 1  # the case all state are False, perfect neg momentum, 1 as perfect momentum
+    else:
+        q = float(same2) / float(same2 + transit2)
+    return p*q-(1-p)*(1-q)
 #  returns a Series of stockcodes and its optimal weight
 def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexCode):
     ###        important notes                ###
@@ -263,47 +397,38 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexC
 
     # 3. decide weight on asset to optimize
     # 3.1 should be diagonalized specific risk variance factor_return_residual
-    speciRisk = matrix(np.identity(n=len(stockCodeList), dtype=float) * (factor_return_residual.std().values ** 2),
+    speciRisk = matrix(np.identity(n=len(stockCodeList), dtype=float)*(factor_return_residual.std().values**2),
                        (len(stockCodeList), len(stockCodeList)))
-    # F = np.dot(factor_return_df.values.transpose(), factor_return_df.values)
+    #F = np.dot(factor_return_df.values.transpose(), factor_return_df.values)
     f = matrix(factor_return_df.values.tolist(), (len(rts.index), len(FactorNames)))
     F = f.T * f
     exp = matrix(stockExposure.values.tolist(), (len(stockCodeList), len(FactorNames)))
     facRisk = exp * F * exp.T
     # the expected returns
     exprts = -1 * rts[stockCodeList].mean().values
-    # 3.2 solving the QP min X'SigX - expRts'X
-    P =facRisk + speciRisk  # ---  #Assest X #Asset # the quadratics term
-    q = -1 * matrix(exprts, (len(stockCodeList), 1))  # first oreder term
+    # 3.2 solving the quadratic cone min Z'SigZ to maximize sharpe ratio
+    P = facRisk + speciRisk  # ---  #Assest X #Asset # the quadratics term
+    q = matrix(np.zeros((1, len(stockCodeList))), (len(stockCodeList), 1))  # first order term zeros
     # now minimize the totoal risk with respect to certain weight
     # import cvxopt to solve
     # the constrains
-    # summation of 1
-    A = matrix(np.ones((1, len(stockCodeList))), (1, len(stockCodeList)))
+    # u'z = 1
+    A = matrix(exprts, (1, len(stockCodeList)))
     b = matrix(1.0)
-    # only positive value of x and u'x > 0
+    # the inequaility constraint
     d = matrix(np.identity(len(stockCodeList)))
-    u = matrix(exprts, (1, len(stockCodeList)))
-    G = -1 * matrix([d, u])
+    e = matrix(1, (1, len(stockCodeList)))
+    G = -1 * matrix([d, e])
     h = matrix(np.zeros((len(stockCodeList)+1, 1)))
     # solving the QP
     # settings of the solvers
+    solvers.options['show_progress'] = False
     sol = solvers.qp(P, q, G, h, A, b)
-    soldf = pd.Series(index=stockCodeList, data=np.array(sol["x"]).reshape(1, len(stockCodeList))[0])
+    z = matrix(sol["x"])
+    k = e*z
+    soldf = pd.Series(index=stockCodeList, data=np.array(z/k).reshape(1, len(stockCodeList))[0])
     return soldf
-# market risk contronl method
-def capitalControlOnMarket(sdk):
-
-    return None
-def getAccountCapital(sdk, quotes):
-    dict_position = {i.code: i.optPosition for i in sdk.getPositions()}
-    dict_price = {i: quotes[i].open for i in dict_position.keys()}
-    dict_cap = {i: dict_position[i]*dict_price[i] for i in dict_position.keys()}
-
-    cap = sdk.getAccountInfo().availableCash
-    for i in dict_cap.keys():
-        cap += dict_cap[i]
-    return cap
+"""position adjusting methods"""
 # adjusting position in stocks
 def adjustPosition(sdk, stockWithWeight, quotes, totalCap):
     dict_position = {i.code: i.optPosition for i in sdk.getPositions()}
@@ -329,21 +454,6 @@ def adjustPosition(sdk, stockWithWeight, quotes, totalCap):
     # second buy the over weighted asset to required weight
     tobuy = distance[distance > 0]
     buyStocksWithCap(sdk, tobuy, quotes)
-# use only partlly of totoal capital
-def get_percent_capital(sdk,quotes,percentage=1):
-    cap = getAccountCapital(sdk, quotes)
-    return cap*percentage
-# select stocks within certain industry
-def selectBySomeMethod(sdk, stockToBuy):
-    buy = []
-    stockCodes = sdk.getStockList()
-    # the history volumne weighted ave price
-    df = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_QUOTE_TCLOSE", PERIOD), columns=stockCodes)[stockToBuy]
-    # the daily returns
-    rts = (df / df.shift(1) - 1)
-    sharpe = rts.mean() / rts.std()
-    good = sharpe[sharpe > sharpe.median()]
-    return good.index.tolist()
 # the buy stock methods, currently buy at open
 def buyStocksWithCap(sdk, stockToBuyWithCap, quotes):
     quoteStocks = quotes.keys()
@@ -365,7 +475,7 @@ def buyStocks(sdk, stockToBuy, quotes):
     asset = sdk.getAccountInfo()
     # 剩余现金作为购买预算 各支股票平均分配预算
     if stockToBuy and asset:
-        budget = asset.availableCash / len(stockToBuy)
+        budget = asset.availableCash * 0.1 / len(stockToBuy)
         orders = []
         for buyStock in stockToBuy:
             buyPrice = quotes[buyStock].open  # 购买价格为上分钟最高价
@@ -407,6 +517,7 @@ def sellStocksWithCap(sdk, stockToSellWithCap, quotes):
         if orders:
             sdk.makeOrders(orders)
             sdk.sdklog(orders, 'sell')
+"""pick up self method"""
 def main():
     # 将策略函数加入
     config['initial'] = initial

@@ -75,7 +75,7 @@ def strategy(sdk):
     DOWN_BAND = -0.2  # the initial down band
     stdObsers = 20  # the param
     stockCode = ["000001", "000002"]
-    latestMt = sdk.getGlobal("MT").tail(1)  # yesterday' signal
+    latestMt = sdk.getGlobal("MT").loc[sdk.getGlobal("MT").index[-1]]  # yesterday' signal
     # set stock individualized standard
     if len(sdk.getGlobal("MT")) > stdObsers:
         recentMts = sdk.getGlobal("MT").tail(stdObsers)
@@ -84,15 +84,8 @@ def strategy(sdk):
         UP_BAND = mtMeans + mtStds
         DOWN_BAND = mtMeans - mtStds
     # find stocks with Hight M and High T
-    highMStocks = set(latestMt[latestMt > UP_BAND].columns.tolist())
-    highTStocks = set(latestMt[latestMt < DOWN_BAND].columns.tolist())
-
-    print(UP_BAND)
-    print(latestMt)
-    """problem here, """"""problem here, """"""problem here, """"""problem here, """"""problem here, """"""problem here, """"""problem here, """
-    print(latestMt > UP_BAND)
-    print(latestMt[latestMt > UP_BAND])
-    """problem here, """"""problem here, """"""problem here, """"""problem here, """"""problem here, """"""problem here, """"""problem here, """
+    highMStocks = set(latestMt[latestMt > UP_BAND].index.tolist())
+    highTStocks = set(latestMt[latestMt < DOWN_BAND].index.tolist())
 
     ''' if the stock lose its position in HM or HT, we should empty our position on this stock'''
     lastHighMStocks = sdk.getGlobal("HM")
