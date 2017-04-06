@@ -4,7 +4,7 @@ import pandas as pd
 from cvxopt import solvers, matrix
 import statsmodels.api as sm
 from CloudQuant import MiniSimulator  # 导入云宽客SDK
-
+"""the mt strategy lose on its T terms, so use M only"""
 
 INIT_CAP = 1000000000  # init capital
 START_DATE = '20120101'  # backtesting start
@@ -81,6 +81,7 @@ def initPerDay(sdk):
     global dayCounter
     dayCounter += 1
 def strategy(sdk):
+    global dayCounter
     updateMtPeriod = 5
     UP_BAND = 0.2  # the initial up band
     DOWN_BAND = -0.2  # the initial down band
@@ -112,11 +113,11 @@ def strategy(sdk):
     leaveHT = []
     if highMStocks - lastHighMStocks:
         newInHM = list(highMStocks - lastHighMStocks)
-    elif lastHighMStocks - highMStocks:
+    if lastHighMStocks - highMStocks:
         leaveHM = list(lastHighMStocks - highMStocks)
-    elif highTStocks - lastHighTStocks:
+    if highTStocks - lastHighTStocks:
         newInHT = list(highTStocks - lastHighTStocks)
-    elif lastHighTStocks - highTStocks:
+    if lastHighTStocks - highTStocks:
         leaveHT = list(lastHighTStocks - highTStocks)
     """check its recent behavior, and operate on it"""
     stockToBuy = []

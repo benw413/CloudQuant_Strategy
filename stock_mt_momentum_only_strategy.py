@@ -5,7 +5,8 @@ from cvxopt import solvers, matrix
 import statsmodels.api as sm
 from CloudQuant import MiniSimulator  # 导入云宽客SDK
 
-
+"""this is the stock mt method using mean+std as band, and momentum only.
+the method shows potential to be future studied"""
 INIT_CAP = 1000000000  # init capital
 START_DATE = '20120101'  # backtesting start
 END_DATE = '20170301'  # backtesting end
@@ -40,7 +41,6 @@ config = {
     "memorySize": 5,
     'assetType': 'STOCK'
 }
-"""this is the stock mt method using mean+std as band, and momentum only"""
 """frame work methods"""
 def initial(sdk):
     global dayCounter
@@ -79,11 +79,10 @@ def initPerDay(sdk):
     global dayCounter
     dayCounter += 1
 def strategy(sdk):
+    global dayCounter
     updateMtPeriod = 5
     UP_BAND = 0.2  # the initial up band
     stdObsers = 20  # the param
-    # dict of stock: index in stockCodelist for stocks in Pool
-    #pooldict = {s: sdk.getStockList().index(s) for s in sdk.getGlobal("Pool")}
     # since we update signal using Close price, at the beginning of each trading day, we can only use
     # yesterday's signal as the latest signal
     latestMt = sdk.getGlobal("MT").loc[sdk.getGlobal("MT").index[-1]]  # yesterday' signal
@@ -103,7 +102,7 @@ def strategy(sdk):
     leaveHM = []
     if highMStocks - lastHighMStocks:
         newInHM = list(highMStocks - lastHighMStocks)
-    elif lastHighMStocks - highMStocks:
+    if lastHighMStocks - highMStocks:
         leaveHM = list(lastHighMStocks - highMStocks)
     """check its recent behavior, and operate on it"""
     stockToBuy = []
