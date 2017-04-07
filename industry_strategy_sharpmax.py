@@ -261,6 +261,7 @@ def getOptWeight(sdk, stockCodeList, FactorNames, exposurePeriod, bencmarkIndexC
         factor_return_df.loc[index] = factor_returns
         factor_return_residual.loc[index] = factor_returns.loc["const"]
 
+    print(factor_return_df)
     # 3. decide weight on asset to optimize
     # 3.1 should be diagonalized specific risk variance factor_return_residual
     speciRisk = matrix(np.identity(n=len(stockCodeList), dtype=float)*(factor_return_residual.std().values**2),
