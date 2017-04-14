@@ -42,9 +42,32 @@ def removeSmallCapStocks(sdk, stockCodes, period, quantile):
                            columns=stockCodeList)[stockCodes]
     v = tradcap.mean().quantile(quantile)
     return tradcap.columns[tradcap.mean() > v].tolist()
+def removeSmallCapStocksLU(sdk, stockCodes, period, quantileL, quantileU):
+    # returns the stockcodes with larger the quantile trading capital
+    stockCodeList = sdk.getStockList()
+    tradcap = pd.DataFrame(data=sdk.getFieldData("LZ_GPA_VAL_A_TCAP", period),
+                           columns=stockCodeList)[stockCodes]
+    l = tradcap.mean().quantile(quantileL)
+    low = tradcap.columns[tradcap.mean() > l].tolist()
+    u = tradcap.mean().quantile(quantileU)
+    up = tradcap.columns[tradcap.mean() < u].tolist()
+    return list(set(low) & set(up))
 
 """2. measuring last period performance"""
-def checkLastPeriodPerformance(sdk, stockCodes, period):
+def checkLastPeriodPerformanceMedian(sdk, stockCodes, period):
+    priceAdjdf = pd.DataFrame(columns=stockCodes)
+    for stock in stockCodes:
+        priceadj = {i: item.close * item.factor
+                    for i, item in enumerate(sdk.getLatest(code=stock, count=period, timefreq="1D"))}
+        stockPriceAdj = pd.Series(data=priceadj.values(), index=priceadj.keys())
+        priceAdjdf[stock] = stockPriceAdj
+    p = priceAdjdf
+    rts = p / p.shift(1) - 1
+    rts.drop(rts.index[0], inplace=True)  # drop the first line NaN value of returns
+    win = rts.median() > 0
+    lose = rts.median() < 0
+    return win[win].index.tolist(), lose[lose].index.tolist()
+def checkLastPeriodPerformanceMean(sdk, stockCodes, period):
     priceAdjdf = pd.DataFrame(columns=stockCodes)
     for stock in stockCodes:
         priceadj = {i: item.close * item.factor
@@ -254,7 +277,6 @@ def getOptWeight(sdk, stockCodeList, FactorNames, obsers, period, bencmarkIndexC
     k = e*z
     soldf = pd.Series(index=stockCodeList, data=np.array(z/k).reshape(1, len(stockCodeList))[0])
     return soldf
-
 """5. buy or sell methods"""
 '''5.1 in dealing with unsuccessful sell'''
 def unSuccessfulSell(sdk, sellStocks):
