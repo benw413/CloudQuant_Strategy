@@ -82,12 +82,22 @@ def checkLastPeriodPerformanceMean(sdk, stockCodes, period):
     return win[win].index.tolist(), lose[lose].index.tolist()
 """3. tech signals"""
 # mt signals
-def binaryDet(series):
+def binaryDet(series, handlingNa=True):
     states = [False, True]
     same1 = 0
     same2 = 0
     transit1 = 0
     transit2 = 0
+
+    '''handling NaN'''
+    if handlingNa:
+        numNa = series.isnull().sum()
+        numOfObser = len(series)
+        if numNa == numOfObser:
+            return np.nan
+        if numNa > (numOfObser / 2):
+            return np.nan
+        series = series.dropna()
 
     for i, state in enumerate(series):
         if i == 0:
@@ -128,7 +138,6 @@ def stockBMT(sdk, stockCodes, numOfObservatios, period=1):
     cluster = rts > 0  # the binary state of rts
     mt = cluster.apply(lambda x: binaryDet(x))
     return mt
-
 """4. optimization buying stocks"""
 # this function should avoid to use todays data, len(FactorNames) < numObsers
 def getOptWeight(sdk, stockCodeList, FactorNames, obsers, period, bencmarkIndexCode):
