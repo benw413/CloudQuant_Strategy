@@ -34,8 +34,6 @@ def strategy(sdk):
     pass
 '''strategy '''
 
-
-
 '''pick up self methods'''
 def main():
     # 将策略函数加入
